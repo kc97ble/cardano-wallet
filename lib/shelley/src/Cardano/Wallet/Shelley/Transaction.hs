@@ -10,6 +10,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLabels #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE RoleAnnotations #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -111,8 +112,10 @@ import Cardano.Wallet.Primitive.Types.Address
     ( Address (..) )
 import Cardano.Wallet.Primitive.Types.Coin
     ( Coin (..) )
+import Cardano.Wallet.Primitive.Types.Credential
+    ( Credential (..), fromLedgerCredential )
 import Cardano.Wallet.Primitive.Types.Hash
-    ( Hash )
+    ( Hash (..) )
 import Cardano.Wallet.Primitive.Types.Redeemer
     ( Redeemer, redeemerData )
 import Cardano.Wallet.Primitive.Types.TokenBundle
@@ -138,7 +141,8 @@ import Cardano.Wallet.Primitive.Types.Tx
     , txSizeDistance
     )
 import Cardano.Wallet.Shelley.Compatibility
-    ( cardanoCertKeysForWitnesses
+    ( pattern InShelleyBasedEra
+    , cardanoCertKeysForWitnesses
     , fromCardanoAddress
     , fromCardanoLovelace
     , fromCardanoTx
@@ -184,6 +188,8 @@ import Control.Monad.Trans.Except
     ( runExceptT )
 import Control.Monad.Trans.State.Strict
     ( StateT (..), execStateT, get, modify' )
+import Data.Either
+    ( partitionEithers )
 import Data.Function
     ( (&) )
 import Data.Functor
@@ -199,7 +205,7 @@ import Data.IntCast
 import Data.Kind
     ( Type )
 import Data.Map.Strict
-    ( Map, (!) )
+    ( Map, (!), (!?) )
 import Data.Maybe
     ( mapMaybe )
 import Data.Quantity
@@ -244,7 +250,6 @@ import qualified Codec.CBOR.Write as CBOR
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Foldable as F
-import qualified Data.List as L
 import qualified Data.Map as Map
 import qualified Data.Map.Merge.Strict as Map
 import qualified Data.Sequence.Strict as StrictSeq
@@ -782,61 +787,70 @@ dummySkeleton inputCount outputs = SelectionSkeleton
 -- Returns `Nothing` for ByronEra transactions.
 _evaluateMinimumFee
     :: Cardano.ProtocolParameters
+    -> Map TxIn Credential
     -> SealedTx
     -> Maybe Coin
-_evaluateMinimumFee pp tx =
-    fromCardanoLovelace <$> minFee
+_evaluateMinimumFee pp credMap (getSealedTxBody -> InShelleyBasedEra _ txBody) =
+    Just . fromCardanoLovelace $
+        Cardano.evaluateTransactionFee pp txBody
+        (fromIntegral witsNum) 0
   where
-    -- NOTE: Assuming one witness per certificate is wrong. KeyReg certs don't
-    -- require witnesses, and several certs may share the same key.
-    minFee = case getSealedTxBody tx of
-        InAnyCardanoEra ShelleyEra txbody ->
-            let (Cardano.ShelleyTxBody _ ledgertxbody _ _ _ _) = txbody
-                certNum = length $ Shelley._certs ledgertxbody
-            in Just $ Cardano.evaluateTransactionFee @Cardano.ShelleyEra pp txbody (witsNum txbody certNum) 0
-        InAnyCardanoEra AllegraEra txbody ->
-            let (Cardano.ShelleyTxBody _ ledgertxbody _ _ _ _) = txbody
-                certNum = length $ ShelleyMA.certs' ledgertxbody
-            in Just $ Cardano.evaluateTransactionFee @Cardano.AllegraEra pp txbody (witsNum txbody certNum) 0
-        InAnyCardanoEra MaryEra txbody ->
-            let (Cardano.ShelleyTxBody _ ledgertxbody _ _ _ _) = txbody
-                certNum = length $ ShelleyMA.certs' ledgertxbody
-            in Just $ Cardano.evaluateTransactionFee @Cardano.MaryEra pp txbody (witsNum txbody certNum) 0
-        InAnyCardanoEra AlonzoEra txbody ->
-            let (Cardano.ShelleyTxBody _ ledgertxbody _ _ _ _) = txbody
-                certNum = length $ Alonzo.txcerts ledgertxbody
-            in Just $ Cardano.evaluateTransactionFee @Cardano.AlonzoEra pp txbody (witsNum txbody certNum) 0
-        InAnyCardanoEra ByronEra _ -> Nothing
+    witsNum :: Int
+    witsNum =
+        uniqCount (inPkhs <> extraPkhs <> certSkhs <> wdlSkhs <> uppGkhs)
+        -- If an input isn't recognized, we assume it requires a key witness
+      + uniqCount unknownIns
+      where
+        Cardano.TxBody txBodyContent = txBody
+        inputs = fst <$> Cardano.txIns txBodyContent
+        collaterals = case Cardano.txInsCollateral txBodyContent of
+            Cardano.TxInsCollateral _ colls -> colls
+            _ -> []
+        (unknownIns, inPkhs) =
+            partitionEithers . mapMaybe (hashForTxIn . fromCardanoTxIn) $
+                inputs <> collaterals
+        extraPkhs = case Cardano.txExtraKeyWits txBodyContent of
+            Cardano.TxExtraKeyWitnesses _ khs -> toKeyHash <$> khs
+            _ -> []
+        certSkhs = case Cardano.txCertificates txBodyContent of
+            Cardano.TxCertificates _ certs _ -> mapMaybe hashForCert certs
+            _ -> []
+        wdlSkhs = case Cardano.txWithdrawals txBodyContent of
+            Cardano.TxWithdrawals _ wdls -> mapMaybe hashForWithdrawal wdls
+            _ -> []
+        uppGkhs = case Cardano.txUpdateProposal txBodyContent of
+            Cardano.TxUpdateProposal _ (Cardano.UpdateProposal upp _) ->
+                toKeyHash <$> Map.keys upp
+            _ -> []
 
-    witsNum txbody certNum =
-        let (Cardano.TxBody txbodycontent) = txbody
-            txIns = Cardano.txIns txbodycontent
-            txIns' = [ txin | (txin, Cardano.ViewTx) <- txIns ]
-            txInsCollateral = Cardano.txInsCollateral txbodycontent
-            txIns'' = case txInsCollateral of
-                Cardano.TxInsCollateral _ collaterals -> collaterals
-                _ -> []
-            txInsUnique =  L.nub $ txIns' ++ txIns''
-            txExtraKeyWits = Cardano.txExtraKeyWits txbodycontent
-            txExtraKeyWits' = case txExtraKeyWits of
-                Cardano.TxExtraKeyWitnesses _ khs -> khs
-                _ -> []
-            txWithdrawals = Cardano.txWithdrawals txbodycontent
-            txWithdrawals' = case txWithdrawals of
-                Cardano.TxWithdrawals _ wdls ->
-                    [ () | (_, _, Cardano.ViewTx) <- wdls ]
-                _ -> []
-            txUpdateProposal = Cardano.txUpdateProposal txbodycontent
-            txUpdateProposal' = case txUpdateProposal of
-                Cardano.TxUpdateProposal _ (Cardano.UpdateProposal updatePerGenesisKey _) ->
-                    Map.size updatePerGenesisKey
-                _ -> 0
-        in fromIntegral $
-           length txInsUnique +
-           length txExtraKeyWits' +
-           length txWithdrawals' +
-           txUpdateProposal' +
-           certNum
+    uniqCount :: Ord a => [a] -> Int
+    uniqCount = Set.size . Set.fromList
+
+    toKeyHash :: Cardano.SerialiseAsRawBytes a => a -> Hash "Key"
+    toKeyHash = Hash . Cardano.serialiseToRawBytes
+
+    hashForCred :: Credential -> Maybe (Hash "Key")
+    hashForCred cred = case cred of
+        KeyHash h -> Just h
+        ScriptHash _ -> Nothing
+
+    hashForTxIn :: TxIn -> Maybe (Either TxIn (Hash "Key"))
+    hashForTxIn in' =
+        maybe (Just (Left in')) (fmap Right . hashForCred) (credMap !? in')
+
+    hashForCert :: Cardano.Certificate -> Maybe (Hash "Key")
+    hashForCert cert = toKeyHash <$> case cert of
+        Cardano.StakeAddressDeregistrationCertificate
+            (Cardano.StakeCredentialByKey h) -> Just h
+        Cardano.StakeAddressDelegationCertificate
+            (Cardano.StakeCredentialByKey h) _ -> Just h
+        _ -> Nothing
+
+    hashForWithdrawal :: (Cardano.StakeAddress, a, b) -> Maybe (Hash "Key")
+    hashForWithdrawal (Cardano.StakeAddress _ cred, _, _) =
+        hashForCred . fromLedgerCredential $ cred
+
+_evaluateMinimumFee _ _ _ = Nothing
 
 _maxScriptExecutionCost
     :: ProtocolParameters
@@ -1730,29 +1744,29 @@ mkUnsignedTx era ttl cs md wdrls certs fees =
     metadataSupported = case era of
         ShelleyBasedEraShelley -> Cardano.TxMetadataInShelleyEra
         ShelleyBasedEraAllegra -> Cardano.TxMetadataInAllegraEra
-        ShelleyBasedEraMary -> Cardano.TxMetadataInMaryEra
-        ShelleyBasedEraAlonzo -> Cardano.TxMetadataInAlonzoEra
+        ShelleyBasedEraMary    -> Cardano.TxMetadataInMaryEra
+        ShelleyBasedEraAlonzo  -> Cardano.TxMetadataInAlonzoEra
 
     certSupported :: Cardano.CertificatesSupportedInEra era
     certSupported = case era of
         ShelleyBasedEraShelley -> Cardano.CertificatesInShelleyEra
         ShelleyBasedEraAllegra -> Cardano.CertificatesInAllegraEra
         ShelleyBasedEraMary    -> Cardano.CertificatesInMaryEra
-        ShelleyBasedEraAlonzo -> Cardano.CertificatesInAlonzoEra
+        ShelleyBasedEraAlonzo  -> Cardano.CertificatesInAlonzoEra
 
     wdrlsSupported :: Cardano.WithdrawalsSupportedInEra era
     wdrlsSupported = case era of
         ShelleyBasedEraShelley -> Cardano.WithdrawalsInShelleyEra
         ShelleyBasedEraAllegra -> Cardano.WithdrawalsInAllegraEra
         ShelleyBasedEraMary    -> Cardano.WithdrawalsInMaryEra
-        ShelleyBasedEraAlonzo -> Cardano.WithdrawalsInAlonzoEra
+        ShelleyBasedEraAlonzo  -> Cardano.WithdrawalsInAlonzoEra
 
     txValidityUpperBoundSupported :: Cardano.ValidityUpperBoundSupportedInEra era
     txValidityUpperBoundSupported = case era of
         ShelleyBasedEraShelley -> Cardano.ValidityUpperBoundInShelleyEra
         ShelleyBasedEraAllegra -> Cardano.ValidityUpperBoundInAllegraEra
-        ShelleyBasedEraMary -> Cardano.ValidityUpperBoundInMaryEra
-        ShelleyBasedEraAlonzo -> Cardano.ValidityUpperBoundInAlonzoEra
+        ShelleyBasedEraMary    -> Cardano.ValidityUpperBoundInMaryEra
+        ShelleyBasedEraAlonzo  -> Cardano.ValidityUpperBoundInAlonzoEra
 
 mkWithdrawals
     :: NetworkId
@@ -1807,4 +1821,4 @@ explicitFees era = case era of
     ShelleyBasedEraShelley -> Cardano.TxFeeExplicit Cardano.TxFeesExplicitInShelleyEra
     ShelleyBasedEraAllegra -> Cardano.TxFeeExplicit Cardano.TxFeesExplicitInAllegraEra
     ShelleyBasedEraMary    -> Cardano.TxFeeExplicit Cardano.TxFeesExplicitInMaryEra
-    ShelleyBasedEraAlonzo -> Cardano.TxFeeExplicit Cardano.TxFeesExplicitInAlonzoEra
+    ShelleyBasedEraAlonzo  -> Cardano.TxFeeExplicit Cardano.TxFeesExplicitInAlonzoEra

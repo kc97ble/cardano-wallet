@@ -19,6 +19,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE ViewPatterns #-}
 
 -- Orphan instances for {Encode,Decode}Address until we get rid of the
 -- Jörmungandr dual support.
@@ -51,6 +52,7 @@ module Cardano.Wallet.Shelley.Compatibility
     , AnyShelleyBasedEra (..)
     , CardanoEra (..)
     , ShelleyBasedEra (..)
+    , pattern InShelleyBasedEra
     , shelleyBasedToCardanoEra
     , shelleyToCardanoEra
     , getShelleyBasedEra
@@ -250,6 +252,8 @@ import Data.Function
     ( (&) )
 import Data.IntCast
     ( intCast )
+import Data.Kind
+    ( Type )
 import Data.List
     ( unzip4 )
 import Data.Map.Strict
@@ -1952,6 +1956,15 @@ instance (forall era. IsCardanoEra era => Eq (thing era)) =>
     InAnyCardanoEra e1 a == InAnyCardanoEra e2 b = case testEquality e1 e2 of
         Just Refl -> a == b
         Nothing -> False
+
+pattern InShelleyBasedEra
+    :: forall (thing :: Type -> Type). forall era.
+       IsShelleyBasedEra era
+    => ShelleyBasedEra era
+    -> thing era
+    -> InAnyCardanoEra thing
+pattern InShelleyBasedEra era thing <-
+    InAnyCardanoEra (cardanoEraStyle -> ShelleyBasedEra era) thing
 
 {-------------------------------------------------------------------------------
                    Assessing sizes of token bundles

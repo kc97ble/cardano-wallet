@@ -65,6 +65,8 @@ import Cardano.Wallet.Primitive.Types.Address
     ( Address (..) )
 import Cardano.Wallet.Primitive.Types.Coin
     ( Coin (..) )
+import Cardano.Wallet.Primitive.Types.Credential
+    ( Credential )
 import Cardano.Wallet.Primitive.Types.Hash
     ( Hash )
 import Cardano.Wallet.Primitive.Types.Redeemer
@@ -83,6 +85,8 @@ import Cardano.Wallet.Primitive.Types.Tx
     )
 import Data.List.NonEmpty
     ( NonEmpty )
+import Data.Map.Strict
+    ( Map )
 import Data.Text
     ( Text )
 import Fmt
@@ -176,6 +180,8 @@ data TransactionLayer k tx = TransactionLayer
     , evaluateMinimumFee
         :: Node.ProtocolParameters
             -- Current protocol parameters
+        -> Map TxIn Credential
+            -- Used to estimate the number of key witnesses
         -> tx
             -- The sealed transaction
         -> Maybe Coin

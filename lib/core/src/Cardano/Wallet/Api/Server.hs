@@ -2286,8 +2286,9 @@ balanceTransaction ctx genChange (ApiT wid) body = do
             genChange
             (pp, nodePParams)
             ti
-            (utxo, Nothing)
+            (utxo, utxo)
             (wallet, pendingTxs)
+            mempty
             partialTx
         return $ ApiSerialisedTransaction { transaction }
   where
@@ -3575,7 +3576,7 @@ getWalletTip
     -> m ApiBlockReference
 getWalletTip ti = makeApiBlockReferenceFromHeader ti . currentTip
 
-fromExternalInput :: ApiExternalInput n -> (TxIn, TxOut, Maybe (Hash "Datum"))
+fromExternalInput :: ApiExternalInput n -> W.TxInputT
 fromExternalInput ApiExternalInput
     { id = ApiT tid
     , index = ix
