@@ -120,8 +120,8 @@ freeBalanceTransaction ctx body = do
     -- TODO: This throws when still in the Byron era.
     nodePParams <- fromJust <$> liftIO (NW.currentNodeProtocolParameters nl)
     let presetInputs = fromExternalInput <$> body ^. #presetInputs
-        availableInputs = fromExternalInput <$> body ^. #availableInputs
-        -- Don't default to `availableInputs` here, defer it to later steps for
+        paymentInputs = fromExternalInput <$> body ^. #paymentInputs
+        -- Don't default to `paymentInputs` here, defer it to later steps for
         -- better performance since the available inputs can be big.
         mCollaterals = fmap fromExternalInput <$> body ^. #collateralInputs
         partialTx = W.PartialTx
@@ -130,9 +130,9 @@ freeBalanceTransaction ctx body = do
             (fromApiRedeemer <$> body ^. #redeemers)
         (ApiT changeAddress, _) = body ^. #changeAddress
         credMap = Map.fromList . mapMaybe gatherCred $
-            presetInputs <> availableInputs <> fromMaybe mempty mCollaterals
-        availableUtxo = W.utxoIndexFromInputs availableInputs
-        collateralUtxo = maybe availableUtxo W.utxoIndexFromInputs mCollaterals
+            presetInputs <> paymentInputs <> fromMaybe mempty mCollaterals
+        paymentUtxo = W.utxoIndexFromInputs paymentInputs
+        collateralUtxo = maybe paymentUtxo W.utxoIndexFromInputs mCollaterals
     withFreeWorkerCtx ctx changeAddress $ \wrk -> do
         ti <- liftIO $ snapshot $ timeInterpreter $ ctx ^. networkLayer
         liftHandler $ ApiSerialisedTransaction . ApiT <$>
@@ -141,9 +141,9 @@ freeBalanceTransaction ctx body = do
                 changeAddress
                 (pp, nodePParams)
                 ti
-                (availableUtxo, collateralUtxo)
-                -- pendingTxs is only used for checking pending withdrawals,
-                -- so it's safe to use mempty here
+                (paymentUtxo, collateralUtxo)
+                -- pendingTxs is only used for checking pending withdrawals in
+                -- selectAssets, so it's safe to use mempty here
                 (wallet, mempty)
                 credMap
                 partialTx

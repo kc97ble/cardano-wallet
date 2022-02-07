@@ -1022,15 +1022,14 @@ data ApiBalanceTransactionPostData (n :: NetworkDiscriminant) = ApiBalanceTransa
     , redeemers :: ![ApiRedeemer n]
     } deriving (Eq, Generic, Show)
 
--- TODO: availableInputs & collateralInputs should use different type.
--- TODO: Technically, changeAddress can be an array.
 data ApiFreeBalanceTransactionPostData (n :: NetworkDiscriminant) = ApiFreeBalanceTransactionPostData
     { transaction :: !(ApiT SealedTx)
     , presetInputs :: ![ApiExternalInput n]
-    , availableInputs :: ![ApiExternalInput n]
+    , paymentInputs :: ![ApiExternalInput n]
     , collateralInputs :: !(Maybe [ApiExternalInput n])
     , redeemers :: ![ApiRedeemer n]
     , changeAddress :: !(ApiT Address, Proxy n)
+    -- TODO: Technically, changeAddress can be an array.
     } deriving (Eq, Generic, Show, Typeable)
 
 type ApiRedeemerData = ApiBytesT 'Base16 ByteString

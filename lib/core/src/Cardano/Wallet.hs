@@ -1439,7 +1439,7 @@ balanceTransaction
     generateChange
     (pp, nodePParams)
     ti
-    (availableUtxo, collateralUtxo)
+    (paymentUtxo, collateralUtxo)
     (wallet, pendingTxs)
     credMap
     (PartialTx partialTx@(cardanoTx -> Cardano.InAnyCardanoEra _ (Cardano.Tx (Cardano.TxBody bod) _)) presetInputs redeemers)
@@ -1453,10 +1453,10 @@ balanceTransaction
     guardConflictingWithdrawalNetworks
 
     (delta, extraInputs, extraCollateral, extraOutputs) <- do
-        let externalSelectedUtxo = utxoIndexFromInputs presetInputs
+        let presetUtxo = utxoIndexFromInputs presetInputs
 
         let utxoAvailableForInputs = UTxOSelection.fromIndexPair
-                (availableUtxo, externalSelectedUtxo)
+                (paymentUtxo, presetUtxo)
 
         let utxoAvailableForCollateral = UTxOIndex.toUTxO collateralUtxo
 
